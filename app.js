@@ -9,14 +9,17 @@ import { validateWorkflow } from "./lib/validate.js";
 import { computeLayout, resolvePositions } from "./lib/layout.js";
 
 const DEF_PATH = "workflow.yaml";
-const CELL_W = 220;
-/** Row pitch — must exceed tallest step card (title + outs). */
-const CELL_H = 200;
 const CARD_W = 188;
-/** Approximate card body for edge anchors (CSS may grow taller). */
-const CARD_H = 96;
-const ORIGIN_X = 56;
+/** Fixed card height in px (must match CSS `.step-card` height). */
+const CARD_H = 92;
+/** Clear air between card bottom and next card top. */
+const GAP_Y = 120;
+const CELL_H = CARD_H + GAP_Y;
+const CELL_W = 260;
+/** Left margin for back-edge lanes (reject / upward edges). */
+const ORIGIN_X = 140;
 const ORIGIN_Y = 40;
+const BACK_LANE = 52;
 
 const pathLabel = document.getElementById("path-label");
 const modeLabel = document.getElementById("mode-label");
@@ -248,8 +251,56 @@ function stepSummary(step) {
 function drawPos(grid) {
   let minX = 0;
   for (const p of positions.values()) minX = Math.min(minX, p.x);
-  const shift = -minX;
-  return { x: grid.x + shift, y: grid.y };
+  return { x: grid.x - minX, y: grid.y };
+}
+
+/**
+ * Route an edge. Forward edges go down; back/up edges use staggered left lanes.
+ * @param {number} [backSlot]
+ */
+function routeEdge(from, to, fromPos, toPos, backSlot = 0) {
+  const halfH = CARD_H / 2;
+  const halfW = CARD_W / 2;
+  const x1 = from.x;
+  const y1 = from.y + halfH - 1;
+  const x2 = to.x;
+  const y2 = to.y - halfH + 1;
+
+  // Same row → horizontal (e.g. onError parked beside source)
+  if (fromPos.y === toPos.y && fromPos.x !== toPos.x) {
+    const dir = toPos.x > fromPos.x ? 1 : -1;
+    const xExit = from.x + dir * halfW;
+    const xEnter = to.x - dir * halfW;
+    const midX = (xExit + xEnter) / 2;
+    return {
+      d: `M ${xExit} ${from.y} L ${xEnter} ${to.y}`,
+      labelAt: { x: midX - 16, y: from.y - 8 },
+      insertAt: null,
+      forward: true,
+    };
+  }
+
+  if (toPos.y > fromPos.y) {
+    const mid = (y1 + y2) / 2;
+    return {
+      d: `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`,
+      labelAt: { x: (x1 + x2) / 2 + 14, y: mid + 4 },
+      insertAt: { x: (x1 + x2) / 2, y: mid },
+      forward: true,
+    };
+  }
+
+  // back-edge / upward: staggered left orthogonal lanes
+  const laneX =
+    Math.min(from.x, to.x) - halfW - BACK_LANE - backSlot * 22;
+  const yExit = from.y;
+  const yEnter = to.y;
+  return {
+    d: `M ${from.x - halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x - halfW} ${yEnter}`,
+    labelAt: { x: laneX + 8, y: (yExit + yEnter) / 2 },
+    insertAt: null,
+    forward: false,
+  };
 }
 
 function renderGraph() {
@@ -271,8 +322,8 @@ function renderGraph() {
     maxY = Math.max(maxY, p.y);
   }
   const cols = maxX - minX + 1;
-  const width = ORIGIN_X + (cols + 1) * CELL_W;
-  const height = ORIGIN_Y + (maxY + 2) * CELL_H + 48;
+  const width = ORIGIN_X + cols * CELL_W + 48;
+  const height = ORIGIN_Y + (maxY + 1) * CELL_H + 32;
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
   svgEl.setAttribute("width", String(width));
@@ -289,11 +340,11 @@ function renderGraph() {
     const marker = document.createElementNS(ns, "marker");
     marker.setAttribute("id", id);
     marker.setAttribute("viewBox", "0 0 10 10");
-    marker.setAttribute("refX", "9");
+    marker.setAttribute("refX", "8");
     marker.setAttribute("refY", "5");
-    marker.setAttribute("markerWidth", "7");
-    marker.setAttribute("markerHeight", "7");
-    marker.setAttribute("orient", "auto-start-reverse");
+    marker.setAttribute("markerWidth", "6");
+    marker.setAttribute("markerHeight", "6");
+    marker.setAttribute("orient", "auto");
     const poly = document.createElementNS(ns, "path");
     poly.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
     poly.setAttribute("fill", color);
@@ -302,7 +353,6 @@ function renderGraph() {
   }
   svgEl.appendChild(defs);
 
-  // orphan banner
   const start = String(ast.start || "");
   const reachable = new Set();
   if (start && steps[start]) {
@@ -318,7 +368,7 @@ function renderGraph() {
   }
   const orphans = Object.keys(steps).filter((id) => !reachable.has(id));
   if (orphans.length) {
-    const y = ORIGIN_Y + (maxY + 1.15) * CELL_H;
+    const y = ORIGIN_Y + (maxY + 0.85) * CELL_H;
     const ban = document.createElement("div");
     ban.className = "orphan-banner";
     ban.style.top = `${y}px`;
@@ -326,7 +376,8 @@ function renderGraph() {
     cardsEl.appendChild(ban);
   }
 
-  // edges + insert handles
+  // edges first (under cards)
+  let backSlot = 0;
   for (const [id, step] of Object.entries(steps)) {
     const fromGrid = positions.get(id);
     if (!fromGrid) continue;
@@ -337,16 +388,19 @@ function renderGraph() {
       if (!toGrid) continue;
       const toPos = drawPos(toGrid);
       const to = cardCenter(toPos);
-      const y1 = from.y + CARD_H / 2 - 4;
-      const y2 = to.y - CARD_H / 2 + 4;
-      const midY = (y1 + y2) / 2;
-      const sameCol = fromPos.x === toPos.x && toPos.y > fromPos.y;
-      const d = sameCol
-        ? `M ${from.x} ${y1} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${y2}`
-        : `M ${from.x} ${y1} C ${from.x} ${y1 + 36}, ${to.x} ${y2 - 36}, ${to.x} ${y2}`;
+      const needsBack =
+        toPos.y < fromPos.y ||
+        (toPos.y === fromPos.y && toPos.x === fromPos.x);
+      const route = routeEdge(
+        from,
+        to,
+        fromPos,
+        toPos,
+        needsBack ? backSlot++ : 0
+      );
 
       const path = document.createElementNS(ns, "path");
-      path.setAttribute("d", d);
+      path.setAttribute("d", route.d);
       path.setAttribute("fill", "none");
       const stroke =
         edge.kind === "onError"
@@ -355,7 +409,7 @@ function renderGraph() {
             ? "var(--accent)"
             : "var(--edge)";
       path.setAttribute("stroke", stroke);
-      path.setAttribute("stroke-width", edge.primary ? "2.4" : "1.6");
+      path.setAttribute("stroke-width", edge.primary ? "2.2" : "1.5");
       path.setAttribute(
         "marker-end",
         edge.kind === "onError"
@@ -364,23 +418,15 @@ function renderGraph() {
             ? "url(#arrow-primary)"
             : "url(#arrow-edge)"
       );
-      if (edge.kind === "onError") path.setAttribute("stroke-dasharray", "5 4");
-      if (!sameCol && toPos.y <= fromPos.y) {
-        // back-edge
-        path.setAttribute(
-          "d",
-          `M ${from.x} ${y1} C ${from.x + 50} ${y1 + 20}, ${to.x + 50} ${to.y}, ${to.x + CARD_W / 2 - 8} ${to.y}`
-        );
+      if (edge.kind === "onError" || !route.forward) {
+        path.setAttribute("stroke-dasharray", "5 4");
       }
       svgEl.appendChild(path);
 
-      const mx = (from.x + to.x) / 2;
-      const my = sameCol ? midY : (y1 + y2) / 2;
-
       if (edge.label && edge.label !== "next") {
         const label = document.createElementNS(ns, "text");
-        label.setAttribute("x", String(mx + 10));
-        label.setAttribute("y", String(my - 6));
+        label.setAttribute("x", String(route.labelAt.x));
+        label.setAttribute("y", String(route.labelAt.y));
         label.setAttribute("fill", "var(--branch)");
         label.setAttribute("font-size", "11");
         label.setAttribute("font-weight", edge.primary ? "600" : "400");
@@ -388,15 +434,21 @@ function renderGraph() {
         svgEl.appendChild(label);
       }
 
-      // insert-on-edge (forward edges only)
-      if (writable() && !yamlBroken && toPos.y > fromPos.y) {
+      // insert only on primary forward edges (avoid clutter / onError)
+      if (
+        writable() &&
+        !yamlBroken &&
+        route.forward &&
+        edge.primary &&
+        route.insertAt
+      ) {
         const plus = document.createElement("button");
         plus.type = "button";
         plus.className = "edge-insert";
         plus.title = `在 ${id} → ${edge.to} 之間插入`;
         plus.textContent = "+";
-        plus.style.left = `${mx - 12}px`;
-        plus.style.top = `${my - 12}px`;
+        plus.style.left = `${route.insertAt.x - 12}px`;
+        plus.style.top = `${route.insertAt.y - 12}px`;
         plus.addEventListener("click", (ev) => {
           ev.stopPropagation();
           insertOnEdge(id, edge);
@@ -421,12 +473,6 @@ function renderGraph() {
     btn.style.top = `${p.top}px`;
     btn.dataset.id = id;
     const title = (step.ui && step.ui.label) || step.title || "";
-    const outs = listOutgoingEdgesMarked(step);
-    const outHint = outs
-      .filter((e) => e.kind !== "onError")
-      .map((e) => (e.primary ? `★${e.label || "next"}→${e.to}` : `${e.label || "→"}${e.to}`))
-      .slice(0, 3)
-      .join(" · ");
     btn.innerHTML = `
       <span class="step-type">${escapeHtml(String(step.type || "?"))}${
         id === start ? " · start" : ""
@@ -434,7 +480,6 @@ function renderGraph() {
       <span class="step-id">${escapeHtml(id)}</span>
       ${title ? `<span class="step-title">${escapeHtml(String(title))}</span>` : ""}
       <span class="step-meta">${escapeHtml(stepSummary(step))}</span>
-      ${outHint ? `<span class="step-outs">${escapeHtml(outHint)}</span>` : ""}
     `;
     btn.addEventListener("click", () => selectStep(id));
     cardsEl.appendChild(btn);
