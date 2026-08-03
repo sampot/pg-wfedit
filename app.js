@@ -9,12 +9,12 @@ import { validateWorkflow } from "./lib/validate.js";
 import { computeLayout, resolvePositions } from "./lib/layout.js";
 
 const DEF_PATH = "workflow.yaml";
-const CELL_W = 200;
-const CELL_H = 110;
-const CARD_W = 184;
-const CARD_H = 72;
-const ORIGIN_X = 48;
-const ORIGIN_Y = 40;
+const CELL_W = 220;
+const CELL_H = 130;
+const CARD_W = 188;
+const CARD_H = 78;
+const ORIGIN_X = 56;
+const ORIGIN_Y = 36;
 
 const pathLabel = document.getElementById("path-label");
 const modeLabel = document.getElementById("mode-label");
@@ -243,6 +243,13 @@ function stepSummary(step) {
   return type;
 }
 
+function drawPos(grid) {
+  let minX = 0;
+  for (const p of positions.values()) minX = Math.min(minX, p.x);
+  const shift = -minX;
+  return { x: grid.x + shift, y: grid.y };
+}
+
 function renderGraph() {
   cardsEl.innerHTML = "";
   svgEl.innerHTML = "";
@@ -254,15 +261,44 @@ function renderGraph() {
   positions = resolvePositions(ast);
 
   let maxX = 0;
+  let minX = 0;
   let maxY = 0;
   for (const p of positions.values()) {
     maxX = Math.max(maxX, p.x);
+    minX = Math.min(minX, p.x);
     maxY = Math.max(maxY, p.y);
   }
-  canvas.style.width = `${ORIGIN_X + (maxX + 2) * CELL_W}px`;
-  canvas.style.height = `${ORIGIN_Y + (maxY + 2) * CELL_H + 40}px`;
-  svgEl.setAttribute("width", canvas.style.width);
-  svgEl.setAttribute("height", canvas.style.height);
+  const cols = maxX - minX + 1;
+  const width = ORIGIN_X + (cols + 1) * CELL_W;
+  const height = ORIGIN_Y + (maxY + 2) * CELL_H + 48;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  svgEl.setAttribute("width", String(width));
+  svgEl.setAttribute("height", String(height));
+  svgEl.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+  const ns = "http://www.w3.org/2000/svg";
+  const defs = document.createElementNS(ns, "defs");
+  for (const [id, color] of [
+    ["arrow-primary", "var(--accent)"],
+    ["arrow-edge", "var(--edge)"],
+    ["arrow-danger", "var(--danger)"],
+  ]) {
+    const marker = document.createElementNS(ns, "marker");
+    marker.setAttribute("id", id);
+    marker.setAttribute("viewBox", "0 0 10 10");
+    marker.setAttribute("refX", "9");
+    marker.setAttribute("refY", "5");
+    marker.setAttribute("markerWidth", "7");
+    marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("orient", "auto-start-reverse");
+    const poly = document.createElementNS(ns, "path");
+    poly.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    poly.setAttribute("fill", color);
+    marker.appendChild(poly);
+    defs.appendChild(marker);
+  }
+  svgEl.appendChild(defs);
 
   // orphan banner
   const start = String(ast.start || "");
@@ -280,10 +316,7 @@ function renderGraph() {
   }
   const orphans = Object.keys(steps).filter((id) => !reachable.has(id));
   if (orphans.length) {
-    const y =
-      ORIGIN_Y +
-      ([...positions.values()].reduce((m, p) => Math.max(m, p.y), 0) + 1.2) *
-        CELL_H;
+    const y = ORIGIN_Y + (maxY + 1.15) * CELL_H;
     const ban = document.createElement("div");
     ban.className = "orphan-banner";
     ban.style.top = `${y}px`;
@@ -291,66 +324,115 @@ function renderGraph() {
     cardsEl.appendChild(ban);
   }
 
-  // edges
-  const ns = "http://www.w3.org/2000/svg";
+  // edges + insert handles
   for (const [id, step] of Object.entries(steps)) {
-    const fromPos = positions.get(id);
-    if (!fromPos) continue;
+    const fromGrid = positions.get(id);
+    if (!fromGrid) continue;
+    const fromPos = drawPos(fromGrid);
     const from = cardCenter(fromPos);
     for (const edge of listOutgoingEdgesMarked(step)) {
-      const toPos = positions.get(edge.to);
-      if (!toPos) continue;
+      const toGrid = positions.get(edge.to);
+      if (!toGrid) continue;
+      const toPos = drawPos(toGrid);
       const to = cardCenter(toPos);
+      const y1 = from.y + CARD_H / 2 - 4;
+      const y2 = to.y - CARD_H / 2 + 4;
+      const midY = (y1 + y2) / 2;
+      const sameCol = fromPos.x === toPos.x && toPos.y > fromPos.y;
+      const d = sameCol
+        ? `M ${from.x} ${y1} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${y2}`
+        : `M ${from.x} ${y1} C ${from.x} ${y1 + 36}, ${to.x} ${y2 - 36}, ${to.x} ${y2}`;
+
       const path = document.createElementNS(ns, "path");
-      const midY = (from.y + to.y) / 2;
-      const d =
-        fromPos.x === toPos.x
-          ? `M ${from.x} ${from.y + 28} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y - 28}`
-          : `M ${from.x} ${from.y + 20} C ${from.x} ${from.y + 50}, ${to.x} ${to.y - 50}, ${to.x} ${to.y - 20}`;
       path.setAttribute("d", d);
       path.setAttribute("fill", "none");
-      path.setAttribute(
-        "stroke",
+      const stroke =
         edge.kind === "onError"
           ? "var(--danger)"
           : edge.primary
             ? "var(--accent)"
-            : "var(--edge)"
+            : "var(--edge)";
+      path.setAttribute("stroke", stroke);
+      path.setAttribute("stroke-width", edge.primary ? "2.4" : "1.6");
+      path.setAttribute(
+        "marker-end",
+        edge.kind === "onError"
+          ? "url(#arrow-danger)"
+          : edge.primary
+            ? "url(#arrow-primary)"
+            : "url(#arrow-edge)"
       );
-      path.setAttribute("stroke-width", edge.primary ? "2.2" : "1.4");
-      if (edge.kind === "onError") {
-        path.setAttribute("stroke-dasharray", "4 3");
+      if (edge.kind === "onError") path.setAttribute("stroke-dasharray", "5 4");
+      if (!sameCol && toPos.y <= fromPos.y) {
+        // back-edge
+        path.setAttribute(
+          "d",
+          `M ${from.x} ${y1} C ${from.x + 50} ${y1 + 20}, ${to.x + 50} ${to.y}, ${to.x + CARD_W / 2 - 8} ${to.y}`
+        );
       }
       svgEl.appendChild(path);
 
+      const mx = (from.x + to.x) / 2;
+      const my = sameCol ? midY : (y1 + y2) / 2;
+
       if (edge.label && edge.label !== "next") {
         const label = document.createElementNS(ns, "text");
-        label.setAttribute("x", String((from.x + to.x) / 2 + 6));
-        label.setAttribute("y", String((from.y + to.y) / 2));
+        label.setAttribute("x", String(mx + 10));
+        label.setAttribute("y", String(my - 6));
         label.setAttribute("fill", "var(--branch)");
         label.setAttribute("font-size", "11");
+        label.setAttribute("font-weight", edge.primary ? "600" : "400");
         label.textContent = edge.label;
         svgEl.appendChild(label);
+      }
+
+      // insert-on-edge (forward edges only)
+      if (writable() && !yamlBroken && toPos.y > fromPos.y) {
+        const plus = document.createElement("button");
+        plus.type = "button";
+        plus.className = "edge-insert";
+        plus.title = `在 ${id} → ${edge.to} 之間插入`;
+        plus.textContent = "+";
+        plus.style.left = `${mx - 12}px`;
+        plus.style.top = `${my - 12}px`;
+        plus.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          insertOnEdge(id, edge);
+        });
+        cardsEl.appendChild(plus);
       }
     }
   }
 
   // cards
   for (const [id, step] of Object.entries(steps)) {
-    const pos = positions.get(id) || { x: 0, y: 0 };
-    const p = px(pos);
+    const grid = positions.get(id) || { x: 0, y: 0 };
+    const p = px(drawPos(grid));
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `step-card${step.type === "terminal" ? " terminal" : ""}${selectedId === id ? " selected" : ""}`;
+    btn.className = `step-card type-${String(step.type || "unknown")}${
+      step.type === "terminal" ? " terminal" : ""
+    }${selectedId === id ? " selected" : ""}${
+      id === start ? " is-start" : ""
+    }`;
     btn.style.left = `${p.left}px`;
     btn.style.top = `${p.top}px`;
     btn.dataset.id = id;
-    const title = step.ui?.label || step.title || "";
+    const title = (step.ui && step.ui.label) || step.title || "";
+    const outs = listOutgoingEdgesMarked(step);
+    const outHint = outs
+      .filter((e) => e.kind !== "onError")
+      .map((e) => (e.primary ? `★${e.label || "next"}→${e.to}` : `${e.label || "→"}${e.to}`))
+      .slice(0, 3)
+      .join(" · ");
     btn.innerHTML = `
-      <span class="step-type">${escapeHtml(String(step.type || "?"))}</span>
+      <span class="step-type">${escapeHtml(String(step.type || "?"))}${
+        id === start ? " · start" : ""
+      }</span>
       <span class="step-id">${escapeHtml(id)}</span>
       ${title ? `<span class="step-title">${escapeHtml(String(title))}</span>` : ""}
       <span class="step-meta">${escapeHtml(stepSummary(step))}</span>
+      ${outHint ? `<span class="step-outs">${escapeHtml(outHint)}</span>` : ""}
     `;
     btn.addEventListener("click", () => selectStep(id));
     cardsEl.appendChild(btn);
@@ -427,12 +509,41 @@ function renderInspector() {
     `;
   }
 
+  const idOpts = Object.keys(steps)
+    .map(
+      (sid) =>
+        `<option value="${escapeHtml(sid)}">${escapeHtml(sid)}</option>`
+    )
+    .join("");
+  const edges = listOutgoingEdgesMarked(step);
+  const edgeRows = edges
+    .map((e, i) => {
+      const opts = Object.keys(steps)
+        .map(
+          (sid) =>
+            `<option value="${escapeHtml(sid)}" ${
+              sid === e.to ? "selected" : ""
+            }>${escapeHtml(sid)}</option>`
+        )
+        .join("");
+      return `<label class="field edge-row"><span>${escapeHtml(
+        e.kind
+      )}${e.primary ? " ★" : ""} · ${escapeHtml(e.label)}</span>
+        <select data-edge="${i}" ${disabled}>${opts}</select></label>`;
+    })
+    .join("");
+
   inspectorBody.innerHTML = `
     <label class="field"><span>stepId</span><input data-k="stepId" value="${escapeHtml(selectedId)}" ${disabled} /></label>
     <label class="field"><span>type</span><select data-k="type" ${disabled}>${typeOpts}</select></label>
     <label class="field"><span>title</span><input data-k="title" value="${escapeHtml(step.title || "")}" ${disabled} /></label>
     ${typeFields}
     <label class="field"><span>ui.primaryNext</span><input data-k="primaryNext" value="${escapeHtml(step.ui?.primaryNext || "")}" ${disabled} /></label>
+    ${
+      edges.length
+        ? `<div class="edge-block"><span class="edge-block-title">出邊（改目標＝編圖）</span>${edgeRows}</div>`
+        : ""
+    }
     <div class="field-row">
       <button type="button" id="btn-apply-step" class="primary" ${disabled}>套用</button>
       <button type="button" id="btn-del-step" class="ghost" ${disabled}>刪除步驟</button>
@@ -448,6 +559,20 @@ function renderInspector() {
   document.getElementById("btn-extract-run")?.addEventListener("click", () => {
     void extractRunFile(selectedId);
   });
+  for (const sel of inspectorBody.querySelectorAll("select[data-edge]")) {
+    sel.addEventListener("change", () => {
+      const idx = Number(sel.getAttribute("data-edge"));
+      const edge = edges[idx];
+      const newTo = sel.value;
+      if (!edge || !newTo || !steps[newTo]) return;
+      setEdgeTarget(step, edge, newTo);
+      markDirty();
+      renderAll();
+      setStatus(`已改 ${edge.kind}/${edge.label} → ${newTo}`, "ok");
+      runValidate(false);
+    });
+  }
+  void idOpts;
 }
 
 async function extractRunFile(id) {
@@ -641,6 +766,59 @@ function rewriteRefs(step, from, to) {
   if (step.ui?.primaryNext === from) step.ui.primaryNext = to;
 }
 
+function allocStepId(prefix = "step") {
+  const steps = ensureSteps();
+  let n = 1;
+  let id = `${prefix}_${n}`;
+  while (steps[id]) {
+    n += 1;
+    id = `${prefix}_${n}`;
+  }
+  return id;
+}
+
+/** Point one outgoing edge at `newTo`. */
+function setEdgeTarget(step, edge, newTo) {
+  if (!step || !edge) return;
+  if (edge.kind === "next") step.next = newTo;
+  else if (edge.kind === "else") step.else = newTo;
+  else if (edge.kind === "onError") step.onError = newTo;
+  else if (edge.kind === "on") {
+    if (!step.on || typeof step.on !== "object") step.on = {};
+    step.on[edge.label] = newTo;
+  } else if (edge.kind === "when") {
+    const when = Array.isArray(step.when) ? step.when : [];
+    const row = when.find(
+      (r) => r && String(r.expr ?? "when") === edge.label && r.next === edge.to
+    );
+    if (row) row.next = newTo;
+    else if (when[0]) when[0].next = newTo;
+  } else if (edge.kind === "timeout" && step.timeout) {
+    step.timeout.next = newTo;
+  }
+}
+
+function insertOnEdge(fromId, edge) {
+  if (!ast || !writable() || yamlBroken) return;
+  const steps = ensureSteps();
+  const from = steps[fromId];
+  if (!from || !edge?.to) return;
+  const id = allocStepId();
+  const oldTo = edge.to;
+  steps[id] = {
+    type: "action",
+    title: "新步驟",
+    builtin: "noop",
+    next: oldTo,
+  };
+  setEdgeTarget(from, edge, id);
+  selectedId = id;
+  markDirty();
+  renderAll();
+  setStatus(`已在 ${fromId} → ${oldTo} 插入 ${id}`, "ok");
+  runValidate(false);
+}
+
 function deleteStep(id) {
   if (!ast || !writable() || !id) return;
   const steps = ensureSteps();
@@ -659,15 +837,10 @@ function deleteStep(id) {
 function addStep() {
   if (!ast || !writable() || yamlBroken) return;
   const steps = ensureSteps();
-  let n = 1;
-  let id = `step_${n}`;
-  while (steps[id]) {
-    n += 1;
-    id = `step_${n}`;
-  }
+  const id = allocStepId();
   steps[id] = { type: "action", title: "新步驟", builtin: "noop", next: "" };
-  // attach after selected or start
-  const anchor = selectedId && steps[selectedId] ? selectedId : String(ast.start || "");
+  const anchor =
+    selectedId && steps[selectedId] ? selectedId : String(ast.start || "");
   if (anchor && steps[anchor] && steps[anchor].type !== "terminal") {
     const prevNext = steps[anchor].next;
     if (steps[anchor].type === "action" || steps[anchor].type === "timer") {
@@ -677,8 +850,6 @@ function addStep() {
   }
   selectedId = id;
   markDirty();
-  // temporary layout for draw (don't write ui until 整理版面)
-  positions = computeLayout(ast, { apply: false });
   renderAll();
   setStatus(`已新增 ${id}`, "ok");
 }
