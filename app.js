@@ -314,18 +314,19 @@ function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
   const yExit = from.y;
   const yEnter = to.y;
   if (to.x > from.x + 8) {
-    // Target is to the right: climb in the gutter, enter target from the left
-    const laneX = to.x - halfW - SIDE_LANE - sideSlot * 16;
+    // Target is to the right: climb in the gutter BETWEEN columns (never on card edge)
+    const gutter = (from.x + halfW + (to.x - halfW)) / 2;
+    const laneX = gutter + sideSlot * 14;
     return {
       d: `M ${from.x + halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x - halfW} ${yEnter}`,
-      labelAt: { x: laneX - 4, y: (yExit + yEnter) / 2 },
+      labelAt: { x: laneX + 6, y: (yExit + yEnter) / 2 },
       insertAt: null,
       forward: false,
       kind: "back",
     };
   }
-  // Same column (or target left): loop on the right, enter target from the right
-  const laneX = from.x + halfW + SIDE_LANE + sideSlot * 20;
+  // Same column: loop further right than any card edge
+  const laneX = from.x + halfW + SIDE_LANE + 12 + sideSlot * 22;
   return {
     d: `M ${from.x + halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x + halfW} ${yEnter}`,
     labelAt: { x: laneX + 8, y: (yExit + yEnter) / 2 },
