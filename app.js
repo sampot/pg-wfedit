@@ -4,14 +4,24 @@
  */
 
 import jsyaml from "https://esm.sh/js-yaml@4.1.0";
-import { STEP_TYPES, listOutgoingEdgesMarked } from "./lib/edges.js";
+import {
+  STEP_TYPES,
+  getPrimaryNext,
+  listOutgoingEdgesMarked,
+  setPrimaryNext,
+} from "./lib/edges.js";
 import { validateWorkflow } from "./lib/validate.js";
 import { computeLayout, resolvePositions } from "./lib/layout.js";
+import {
+  listMainChain,
+  moveIndex,
+  reorderMainChain,
+} from "./lib/reorder.js";
 
 const DEF_PATH = "workflow.yaml";
 const CARD_W = 188;
 /** Fixed card height in px (must match CSS `.step-card` height). */
-const CARD_H = 92;
+const CARD_H = 110;
 /** Air between card bottom and next card top. */
 const GAP_Y = 52;
 const CELL_H = CARD_H + GAP_Y;
@@ -20,10 +30,12 @@ const ORIGIN_X = 72;
 const ORIGIN_Y = 32;
 /** Side lane offset for back-edges / non-primary loops (to the right of cards). */
 const SIDE_LANE = 36;
+const DRAG_THRESHOLD = 6;
 
 const pathLabel = document.getElementById("path-label");
 const modeLabel = document.getElementById("mode-label");
 const statusEl = document.getElementById("status");
+const canvasWrap = document.getElementById("canvas-wrap");
 const canvas = document.getElementById("canvas");
 const cardsEl = document.getElementById("cards");
 const svgEl = document.getElementById("edges-svg");
@@ -58,6 +70,8 @@ let yamlBroken = false;
 let selectedId = "";
 /** @type {Map<string, { x: number, y: number }>} */
 let positions = new Map();
+/** @type {any} move-card or link-next drag state */
+let drag = null;
 
 function setStatus(text, tone = "") {
   statusEl.textContent = text || "";
@@ -281,6 +295,8 @@ function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
       d: `M ${xExit} ${from.y} L ${xEnter} ${to.y}`,
       labelAt: { x: midX - 10, y: from.y - 10 },
       insertAt: null,
+      startAt: { x: xExit, y: from.y },
+      endAt: { x: xEnter, y: to.y },
       forward: true,
       kind: "horizontal",
     };
@@ -293,6 +309,8 @@ function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
       d: `M ${xBot} ${yBot} L ${xTop} ${yTop}`,
       labelAt: { x: xBot + 12, y: midY + 4 },
       insertAt: { x: xBot, y: midY },
+      startAt: { x: xBot, y: yBot },
+      endAt: { x: xTop, y: yTop },
       forward: true,
       kind: "main",
     };
@@ -305,6 +323,8 @@ function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
       d: `M ${xBot} ${yBot} C ${xBot} ${midY}, ${xTop} ${midY}, ${xTop} ${yTop}`,
       labelAt: { x: (xBot + xTop) / 2 + 8, y: midY - 4 },
       insertAt: { x: (xBot + xTop) / 2, y: midY },
+      startAt: { x: xBot, y: yBot },
+      endAt: { x: xTop, y: yTop },
       forward: true,
       kind: "branch",
     };
@@ -321,6 +341,8 @@ function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
       d: `M ${from.x + halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x - halfW} ${yEnter}`,
       labelAt: { x: laneX + 6, y: (yExit + yEnter) / 2 },
       insertAt: null,
+      startAt: { x: from.x + halfW, y: yExit },
+      endAt: { x: to.x - halfW, y: yEnter },
       forward: false,
       kind: "back",
     };
@@ -331,6 +353,8 @@ function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
     d: `M ${from.x + halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x + halfW} ${yEnter}`,
     labelAt: { x: laneX + 8, y: (yExit + yEnter) / 2 },
     insertAt: null,
+    startAt: { x: from.x + halfW, y: yExit },
+    endAt: { x: to.x + halfW, y: yEnter },
     forward: false,
     kind: "back",
   };
@@ -458,11 +482,17 @@ function renderGraph() {
       }
       // Keep stroke centered under markers
       path.setAttribute("stroke-linecap", "round");
+      path.dataset.from = id;
+      path.dataset.to = edge.to;
+      path.dataset.kind = edge.kind;
       svgEl.appendChild(path);
 
-      if (edge.label && edge.label !== "next") {
+      const showEdgeLabel = Boolean(edge.label && edge.label !== "next");
+      // Reserve space so × sits to the left of the label (esp. onError / reject).
+      const labelPad = writable() && !yamlBroken && showEdgeLabel ? 18 : 0;
+      if (showEdgeLabel) {
         const label = document.createElementNS(ns, "text");
-        label.setAttribute("x", String(route.labelAt.x));
+        label.setAttribute("x", String(route.labelAt.x + labelPad));
         label.setAttribute("y", String(route.labelAt.y));
         label.setAttribute("fill", "var(--branch)");
         label.setAttribute("font-size", "11");
@@ -472,6 +502,53 @@ function renderGraph() {
         );
         label.textContent = edge.label;
         svgEl.appendChild(label);
+      }
+
+      if (writable() && !yamlBroken && route.endAt) {
+        // Drag arrow tip → retarget or drop empty to delete
+        const endBtn = document.createElement("button");
+        endBtn.type = "button";
+        endBtn.className = `edge-end-handle${
+          edge.kind === "onError" ? " danger" : ""
+        }${edge.primary ? " primary" : ""}`;
+        endBtn.title = `拖曳改「${edge.label}」連到哪張卡；放到空白／刪除區可刪除`;
+        endBtn.setAttribute(
+          "aria-label",
+          `拖曳 ${id}.${edge.label} → ${edge.to}`
+        );
+        endBtn.style.left = `${route.endAt.x - 8}px`;
+        endBtn.style.top = `${route.endAt.y - 8}px`;
+        endBtn.addEventListener("pointerdown", (ev) => {
+          onLinkPointerDown(ev, id, edge, {
+            originX: route.startAt?.x ?? from.x,
+            originY: route.startAt?.y ?? from.y + CARD_H / 2,
+            rewire: true,
+          });
+        });
+        cardsEl.appendChild(endBtn);
+
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "edge-delete";
+        delBtn.title = `刪除 ${id} → ${edge.to}（${edge.label}）`;
+        delBtn.textContent = "×";
+        if (showEdgeLabel) {
+          // Left of label text
+          delBtn.style.left = `${route.labelAt.x - 2}px`;
+          delBtn.style.top = `${route.labelAt.y - 10}px`;
+        } else if (route.insertAt) {
+          delBtn.style.left = `${route.insertAt.x + 14}px`;
+          delBtn.style.top = `${route.insertAt.y - 10}px`;
+        } else {
+          const delAt = route.labelAt || route.endAt;
+          delBtn.style.left = `${delAt.x}px`;
+          delBtn.style.top = `${delAt.y - 10}px`;
+        }
+        delBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          deleteEdge(id, edge);
+        });
+        cardsEl.appendChild(delBtn);
       }
 
       // insert only on main-chain primary edges
@@ -521,10 +598,555 @@ function renderGraph() {
       ${title ? `<span class="step-title">${escapeHtml(String(title))}</span>` : ""}
       <span class="step-meta">${escapeHtml(stepSummary(step))}</span>
     `;
-    btn.addEventListener("click", () => selectStep(id));
+    btn.addEventListener("click", (ev) => {
+      if (btn.dataset.suppressClick === "1") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        delete btn.dataset.suppressClick;
+        return;
+      }
+      selectStep(id);
+    });
+    if (writable() && !yamlBroken) {
+      btn.classList.add("draggable");
+      btn.addEventListener("pointerdown", (ev) => {
+        if (ev.target.closest(".link-handle")) return;
+        onCardPointerDown(ev, id, btn);
+      });
+      if (String(step.type || "") !== "terminal") {
+        const outs = listOutgoingEdgesMarked(step);
+        const primaryEdge = outs.find((e) => e.primary) || null;
+        const handle = document.createElement("button");
+        handle.type = "button";
+        handle.className = "link-handle";
+        handle.title =
+          "拖到目標步驟設定 next；若已有連線，放到空白處可刪除";
+        handle.setAttribute("aria-label", `從 ${id} 拉線設定 next`);
+        handle.addEventListener("pointerdown", (ev) => {
+          onLinkPointerDown(ev, id, primaryEdge, { rewire: Boolean(primaryEdge) });
+        });
+        btn.appendChild(handle);
+
+        // Extra exits without a drawn target still need a source port
+        const extras = outs.filter((e) => !e.primary);
+        extras.forEach((edge, i) => {
+          const alt = document.createElement("button");
+          alt.type = "button";
+          alt.className = `link-handle alt${
+            edge.kind === "onError" ? " danger" : ""
+          }`;
+          alt.title = `拖曳改「${edge.label}」；放到空白處刪除`;
+          alt.setAttribute(
+            "aria-label",
+            `從 ${id}.${edge.label} 拉線`
+          );
+          alt.style.setProperty("--alt-i", String(i));
+          alt.addEventListener("pointerdown", (ev) => {
+            onLinkPointerDown(ev, id, edge, { rewire: true });
+          });
+          btn.appendChild(alt);
+        });
+      }
+    }
     cardsEl.appendChild(btn);
   }
 }
+
+function canvasPoint(clientX, clientY) {
+  const rect = canvasWrap.getBoundingClientRect();
+  return {
+    x: clientX - rect.left + canvasWrap.scrollLeft,
+    y: clientY - rect.top + canvasWrap.scrollTop,
+  };
+}
+
+function minDrawX() {
+  let minX = 0;
+  for (const p of positions.values()) minX = Math.min(minX, p.x);
+  return minX;
+}
+
+/** @returns {{ index: number, left: number, top: number }[]} */
+function mainChainDropSlots(movingId) {
+  if (!ast) return [];
+  const chain = listMainChain(ast);
+  if (!chain.includes(movingId)) return [];
+  const steps = ensureSteps();
+  const minX = minDrawX();
+  /** @type {{ index: number, left: number, top: number }[]} */
+  const slots = [];
+  for (let index = 0; index <= chain.length; index += 1) {
+    const next = moveIndex(chain, movingId, index);
+    if (!next) continue;
+    let valid = true;
+    for (let i = 0; i < next.length - 1; i += 1) {
+      if (String(steps[next[i]]?.type || "") === "terminal") {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) continue;
+    const y = ORIGIN_Y + index * CELL_H - GAP_Y / 2 - 3;
+    const left = ORIGIN_X + (0 - minX) * CELL_W;
+    slots.push({ index, left, top: Math.max(4, y) });
+  }
+  return slots;
+}
+
+function clearDropSlots() {
+  cardsEl.querySelectorAll(".drop-slot").forEach((el) => el.remove());
+}
+
+function showDropSlots(movingId) {
+  clearDropSlots();
+  for (const slot of mainChainDropSlots(movingId)) {
+    const el = document.createElement("div");
+    el.className = "drop-slot";
+    el.dataset.index = String(slot.index);
+    el.style.left = `${slot.left}px`;
+    el.style.top = `${slot.top}px`;
+    el.style.width = `${CARD_W}px`;
+    cardsEl.appendChild(el);
+  }
+}
+
+function highlightNearestSlot(clientX, clientY) {
+  const pt = canvasPoint(clientX, clientY);
+  const slots = [...cardsEl.querySelectorAll(".drop-slot")];
+  let best = null;
+  let bestDist = Infinity;
+  for (const el of slots) {
+    const left = Number.parseFloat(el.style.left) || 0;
+    const top = Number.parseFloat(el.style.top) || 0;
+    const cx = left + CARD_W / 2;
+    const cy = top + 4;
+    const dist = Math.hypot(pt.x - cx, pt.y - cy);
+    el.classList.toggle("active", false);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = el;
+    }
+  }
+  if (best && bestDist < CELL_H * 0.65) {
+    best.classList.add("active");
+    return Number(best.dataset.index);
+  }
+  return null;
+}
+
+function onCardPointerDown(ev, id, el) {
+  if (!writable() || yamlBroken || ev.button !== 0) return;
+  if (
+    ev.target.closest(
+      ".edge-insert, .link-handle, .edge-end-handle, .edge-delete, .link-delete-zone"
+    )
+  ) {
+    return;
+  }
+  const p = canvasPoint(ev.clientX, ev.clientY);
+  const left = Number.parseFloat(el.style.left) || 0;
+  const top = Number.parseFloat(el.style.top) || 0;
+  drag = {
+    mode: "move",
+    id,
+    pointerId: ev.pointerId,
+    startX: ev.clientX,
+    startY: ev.clientY,
+    grabDX: p.x - left,
+    grabDY: p.y - top,
+    active: false,
+    moved: false,
+    el,
+  };
+  try {
+    el.setPointerCapture(ev.pointerId);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * @param {PointerEvent} ev
+ * @param {string} fromId
+ * @param {import("./lib/edges.js").Edge | null} edge
+ * @param {{ originX?: number, originY?: number, rewire?: boolean }} [opts]
+ */
+function onLinkPointerDown(ev, fromId, edge, opts = {}) {
+  if (!writable() || yamlBroken || ev.button !== 0) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const fromEl = cardsEl.querySelector(`[data-id="${CSS.escape(fromId)}"]`);
+  if (!fromEl) return;
+  const fr = fromEl.getBoundingClientRect();
+  const origin =
+    opts.originX != null && opts.originY != null
+      ? { x: opts.originX, y: opts.originY }
+      : canvasPoint(fr.left + fr.width / 2, fr.bottom - 2);
+  const ns = "http://www.w3.org/2000/svg";
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("class", "link-preview");
+  path.setAttribute("fill", "none");
+  path.setAttribute(
+    "stroke",
+    edge?.kind === "onError" ? "var(--danger)" : "var(--accent)"
+  );
+  path.setAttribute("stroke-width", "2.25");
+  path.setAttribute("stroke-dasharray", "6 4");
+  path.setAttribute(
+    "marker-end",
+    edge?.kind === "onError" ? "url(#arrow-danger)" : "url(#arrow-primary)"
+  );
+  svgEl.appendChild(path);
+
+  const canDelete = Boolean(
+    opts.rewire || (edge && edge.to) || getPrimaryNext(ensureSteps()[fromId])
+  );
+
+  // Dim the existing wire being rewired
+  if (edge?.to) {
+    svgEl.querySelectorAll("path").forEach((p) => {
+      if (
+        p.dataset.from === fromId &&
+        p.dataset.to === edge.to &&
+        p.dataset.kind === edge.kind
+      ) {
+        p.classList.add("edge-dimmed");
+      }
+    });
+  }
+
+  drag = {
+    mode: "link",
+    fromId,
+    edge,
+    pointerId: ev.pointerId,
+    startX: ev.clientX,
+    startY: ev.clientY,
+    originX: origin.x,
+    originY: origin.y,
+    active: false,
+    path,
+    canDelete,
+  };
+  try {
+    (ev.currentTarget instanceof Element
+      ? ev.currentTarget
+      : fromEl
+    ).setPointerCapture(ev.pointerId);
+  } catch {
+    /* ignore */
+  }
+  selectedId = fromId;
+  renderInspector();
+  canvasWrap.classList.add("is-linking");
+  if (canDelete) showLinkDeleteZone(true);
+}
+
+function showLinkDeleteZone(on) {
+  let zone = document.getElementById("link-delete-zone");
+  if (!on) {
+    zone?.remove();
+    return;
+  }
+  if (!zone) {
+    zone = document.createElement("div");
+    zone.id = "link-delete-zone";
+    zone.className = "link-delete-zone";
+    zone.textContent = "放到此處刪除連線";
+    canvasWrap.appendChild(zone);
+  }
+  zone.classList.remove("active");
+}
+
+function hitTestDeleteZone(clientX, clientY) {
+  const zone = document.getElementById("link-delete-zone");
+  if (!zone) return false;
+  const r = zone.getBoundingClientRect();
+  return (
+    clientX >= r.left &&
+    clientX <= r.right &&
+    clientY >= r.top &&
+    clientY <= r.bottom
+  );
+}
+
+function clearLinkTargets() {
+  cardsEl
+    .querySelectorAll(".step-card.link-target")
+    .forEach((el) => el.classList.remove("link-target"));
+  document
+    .getElementById("link-delete-zone")
+    ?.classList.remove("active");
+}
+
+function hitTestStepId(clientX, clientY) {
+  const stack = document.elementsFromPoint(clientX, clientY);
+  for (const node of stack) {
+    if (!(node instanceof Element)) continue;
+    if (node.closest(".link-delete-zone")) return null;
+    const card = node.closest(".step-card");
+    if (card && card instanceof HTMLElement && card.dataset.id) {
+      return card.dataset.id;
+    }
+  }
+  return null;
+}
+
+function updateLinkPreview(clientX, clientY) {
+  if (!drag || drag.mode !== "link" || !drag.path) return;
+  const pt = canvasPoint(clientX, clientY);
+  const x1 = drag.originX;
+  const y1 = drag.originY;
+  const x2 = pt.x;
+  const y2 = pt.y;
+  const midY = (y1 + y2) / 2;
+  drag.path.setAttribute(
+    "d",
+    `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`
+  );
+  clearLinkTargets();
+  if (hitTestDeleteZone(clientX, clientY)) {
+    document.getElementById("link-delete-zone")?.classList.add("active");
+    return;
+  }
+  const over = hitTestStepId(clientX, clientY);
+  if (over && over !== drag.fromId) {
+    const el = cardsEl.querySelector(`[data-id="${CSS.escape(over)}"]`);
+    el?.classList.add("link-target");
+  } else if (drag.canDelete && !over) {
+    // Hint: empty canvas will delete
+    document.getElementById("link-delete-zone")?.classList.add("active");
+  }
+}
+
+function clearEdge(fromId, edge) {
+  const steps = ensureSteps();
+  const from = steps[fromId];
+  if (!from) return false;
+  if (edge) setEdgeTarget(from, edge, "");
+  else setPrimaryNext(from, "");
+  return true;
+}
+
+function deleteEdge(fromId, edge) {
+  if (!ast || !writable() || yamlBroken) return;
+  if (!clearEdge(fromId, edge)) return;
+  selectedId = fromId;
+  markDirty();
+  computeLayout(ast, { apply: true });
+  positions = resolvePositions(ast);
+  renderAll();
+  runValidate(false);
+  setStatus(`已刪除 ${fromId}.${edge?.label || "next"} → ${edge?.to || ""}`, "ok");
+}
+
+function endLinkDrag(ev, commit) {
+  if (!drag || drag.mode !== "link") return;
+  const state = drag;
+  drag = null;
+  canvasWrap.classList.remove("is-linking");
+  clearLinkTargets();
+  showLinkDeleteZone(false);
+  state.path?.remove();
+  const captureEl =
+    document.elementFromPoint(state.startX, state.startY) ||
+    cardsEl.querySelector(`[data-id="${CSS.escape(state.fromId)}"]`);
+  try {
+    if (captureEl instanceof Element) {
+      captureEl.releasePointerCapture(state.pointerId);
+    }
+  } catch {
+    /* ignore */
+  }
+  const fromCard = cardsEl.querySelector(
+    `[data-id="${CSS.escape(state.fromId)}"]`
+  );
+  if (fromCard) fromCard.dataset.suppressClick = "1";
+
+  if (!commit || !ast || !state.active) {
+    renderGraph();
+    return;
+  }
+
+  const wantDelete =
+    hitTestDeleteZone(ev.clientX, ev.clientY) ||
+    (!hitTestStepId(ev.clientX, ev.clientY) && state.canDelete);
+  const toId = hitTestStepId(ev.clientX, ev.clientY);
+  const steps = ensureSteps();
+  const from = steps[state.fromId];
+  if (!from) {
+    renderGraph();
+    return;
+  }
+
+  const label = state.edge?.label || "next";
+
+  // Drop on self / delete zone / empty (when rewiring) → clear
+  if (toId === state.fromId || wantDelete) {
+    if (!state.canDelete && toId !== state.fromId) {
+      renderGraph();
+      setStatus("拉線取消（請放到目標步驟上）");
+      return;
+    }
+    clearEdge(state.fromId, state.edge);
+    selectedId = state.fromId;
+    markDirty();
+    computeLayout(ast, { apply: true });
+    positions = resolvePositions(ast);
+    renderAll();
+    runValidate(false);
+    setStatus(`已刪除 ${state.fromId}.${label} 連線`, "ok");
+    return;
+  }
+
+  if (!toId || !steps[toId]) {
+    renderGraph();
+    setStatus("拉線取消（請放到目標步驟上）");
+    return;
+  }
+
+  const prev = state.edge
+    ? state.edge.to
+    : getPrimaryNext(from) || "";
+  if (prev === toId) {
+    renderGraph();
+    return;
+  }
+
+  if (state.edge) setEdgeTarget(from, { ...state.edge }, toId);
+  else setPrimaryNext(from, toId);
+
+  selectedId = state.fromId;
+  markDirty();
+  computeLayout(ast, { apply: true });
+  positions = resolvePositions(ast);
+  renderAll();
+  runValidate(false);
+  setStatus(`已將 ${state.fromId}.${label} → ${toId}`, "ok");
+}
+
+function endMoveDrag(ev, commit) {
+  if (!drag || drag.mode !== "move") return;
+  const state = drag;
+  drag = null;
+  canvasWrap.classList.remove("is-dragging");
+  const activeIndex = commit
+    ? highlightNearestSlot(ev.clientX, ev.clientY)
+    : null;
+  clearDropSlots();
+  if (state.el) {
+    state.el.classList.remove("dragging");
+    try {
+      state.el.releasePointerCapture(state.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!state.active) return;
+  if (state.el) state.el.dataset.suppressClick = "1";
+  if (!commit || !ast) {
+    renderGraph();
+    return;
+  }
+
+  const chain = listMainChain(ast);
+  if (activeIndex != null && chain.includes(state.id)) {
+    const result = reorderMainChain(ast, state.id, activeIndex);
+    if (!result.ok) {
+      renderGraph();
+      setStatus(result.reason || "無法重排", "bad");
+      return;
+    }
+    computeLayout(ast, { apply: true });
+    positions = resolvePositions(ast);
+    selectedId = state.id;
+    markDirty();
+    renderAll();
+    runValidate(false);
+    setStatus(`已拖曳重排主鏈（${result.chain.join(" → ")}）`, "ok");
+    return;
+  }
+
+  // Free snap: write ui.x / ui.y (layout only)
+  const pt = canvasPoint(ev.clientX, ev.clientY);
+  const minX = minDrawX();
+  const gridX = Math.round((pt.x - ORIGIN_X - CARD_W / 2) / CELL_W) + minX;
+  const gridY = Math.max(
+    0,
+    Math.round((pt.y - ORIGIN_Y - CARD_H / 2) / CELL_H)
+  );
+  const steps = ensureSteps();
+  const step = steps[state.id];
+  if (!step) {
+    renderGraph();
+    return;
+  }
+  const prev = positions.get(state.id) || { x: 0, y: 0 };
+  if (prev.x === gridX && prev.y === gridY) {
+    renderGraph();
+    return;
+  }
+  const ui =
+    step.ui && typeof step.ui === "object" && !Array.isArray(step.ui)
+      ? { ...step.ui }
+      : {};
+  ui.x = gridX;
+  ui.y = gridY;
+  ui.layout = "wfedit.v1";
+  step.ui = ui;
+  positions = resolvePositions(ast);
+  selectedId = state.id;
+  markDirty();
+  renderAll();
+  setStatus(`已移動 ${state.id} → (${gridX}, ${gridY})`, "ok");
+}
+
+function endDrag(ev, commit) {
+  if (!drag) return;
+  if (drag.mode === "link") endLinkDrag(ev, commit);
+  else endMoveDrag(ev, commit);
+}
+
+window.addEventListener("pointermove", (ev) => {
+  if (!drag || ev.pointerId !== drag.pointerId) return;
+  if (drag.mode === "link") {
+    const dx = ev.clientX - drag.startX;
+    const dy = ev.clientY - drag.startY;
+    if (!drag.active && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
+      drag.active = true;
+    }
+    if (drag.active) updateLinkPreview(ev.clientX, ev.clientY);
+    return;
+  }
+  const dx = ev.clientX - drag.startX;
+  const dy = ev.clientY - drag.startY;
+  if (!drag.active) {
+    if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    drag.active = true;
+    drag.moved = true;
+    selectedId = drag.id;
+    renderInspector();
+    drag.el?.classList.add("dragging");
+    canvasWrap.classList.add("is-dragging");
+    showDropSlots(drag.id);
+  }
+  const pt = canvasPoint(ev.clientX, ev.clientY);
+  if (drag.el) {
+    drag.el.style.left = `${pt.x - drag.grabDX}px`;
+    drag.el.style.top = `${pt.y - drag.grabDY}px`;
+  }
+  highlightNearestSlot(ev.clientX, ev.clientY);
+});
+
+window.addEventListener("pointerup", (ev) => {
+  if (!drag || ev.pointerId !== drag.pointerId) return;
+  endDrag(ev, true);
+});
+
+window.addEventListener("pointercancel", (ev) => {
+  if (!drag || ev.pointerId !== drag.pointerId) return;
+  endDrag(ev, false);
+});
 
 function selectStep(id) {
   selectedId = id;
@@ -857,25 +1479,46 @@ function allocStepId(prefix = "step") {
   return id;
 }
 
-/** Point one outgoing edge at `newTo`. */
+/** Point one outgoing edge at `newTo` (empty clears that exit). */
 function setEdgeTarget(step, edge, newTo) {
   if (!step || !edge) return;
-  if (edge.kind === "next") step.next = newTo;
-  else if (edge.kind === "else") step.else = newTo;
-  else if (edge.kind === "onError") step.onError = newTo;
-  else if (edge.kind === "on") {
+  const target = String(newTo || "").trim();
+  if (edge.kind === "next") {
+    if (target) step.next = target;
+    else delete step.next;
+  } else if (edge.kind === "else") {
+    if (target) step.else = target;
+    else delete step.else;
+  } else if (edge.kind === "onError") {
+    if (target) step.onError = target;
+    else delete step.onError;
+  } else if (edge.kind === "on") {
     if (!step.on || typeof step.on !== "object") step.on = {};
-    step.on[edge.label] = newTo;
+    if (target) step.on[edge.label] = target;
+    else delete step.on[edge.label];
   } else if (edge.kind === "when") {
     const when = Array.isArray(step.when) ? step.when : [];
     const row = when.find(
       (r) => r && String(r.expr ?? "when") === edge.label && r.next === edge.to
     );
-    if (row) row.next = newTo;
-    else if (when[0]) when[0].next = newTo;
+    if (row) {
+      if (target) row.next = target;
+      else delete row.next;
+    } else if (when[0]) {
+      if (target) when[0].next = target;
+      else delete when[0].next;
+    }
   } else if (edge.kind === "timeout" && step.timeout) {
-    step.timeout.next = newTo;
+    if (target) step.timeout.next = target;
+    else delete step.timeout.next;
   }
+}
+
+/** After insert/delete/rewire: rewrite ui so cards don't stack on old coords. */
+function relayoutStructure() {
+  if (!ast) return;
+  computeLayout(ast, { apply: true });
+  positions = resolvePositions(ast);
 }
 
 function insertOnEdge(fromId, edge) {
@@ -893,6 +1536,7 @@ function insertOnEdge(fromId, edge) {
   };
   setEdgeTarget(from, edge, id);
   selectedId = id;
+  relayoutStructure();
   markDirty();
   renderAll();
   setStatus(`已在 ${fromId} → ${oldTo} 插入 ${id}`, "ok");
@@ -909,6 +1553,7 @@ function deleteStep(id) {
   }
   delete steps[id];
   selectedId = "";
+  relayoutStructure();
   markDirty();
   renderAll();
   setStatus(`已刪除 ${id}`, "ok");
@@ -929,6 +1574,7 @@ function addStep() {
     }
   }
   selectedId = id;
+  relayoutStructure();
   markDirty();
   renderAll();
   setStatus(`已新增 ${id}`, "ok");

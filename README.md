@@ -8,6 +8,10 @@
 
 YAML 往返可能**丟失註解**（MVP）。
 
+圖模可**拖曳主鏈卡片**重排（落在青色插槽＝改 primary／`start`）；未命中插槽則格點微調 `ui.x`／`ui.y`。
+
+連線編輯：拖**箭頭端點**到別張卡＝改目標；拖到空白／刪除區或按線旁 **×**＝刪除。卡底圓點可新建／改主後繼；側圓點改其他出邊。
+
 ## 一鍵開
 
 **[一鍵開](https://samkuo.me/playgrounds/?open=sampot%2Fpg-wfedit&name=%E6%B5%81%E7%A8%8B%E8%A6%96%E8%A6%BA%E7%B7%A8%E8%BC%AF)**

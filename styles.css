@@ -205,8 +205,8 @@ button.active {
 .step-card {
   position: absolute;
   width: 11.75rem;
-  height: 92px; /* keep in sync with CARD_H in app.js */
-  padding: 0.5rem 0.65rem;
+  height: 110px; /* keep in sync with CARD_H in app.js */
+  padding: 0.55rem 0.65rem 0.5rem;
   border: 1px solid var(--line);
   border-radius: 0.55rem;
   background: var(--card);
@@ -214,6 +214,188 @@ button.active {
   cursor: pointer;
   text-align: left;
   overflow: hidden;
+  line-height: 1.3;
+}
+
+.step-card.draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.step-card.dragging {
+  cursor: grabbing;
+  z-index: 20;
+  opacity: 0.92;
+  box-shadow:
+    0 8px 24px color-mix(in srgb, var(--text) 18%, transparent),
+    inset 0 3px 0 color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.canvas-wrap.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.drop-slot {
+  position: absolute;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent) 70%, var(--line));
+  z-index: 15;
+  pointer-events: none;
+  opacity: 0.55;
+  transition: opacity 0.12s ease, background 0.12s ease, height 0.12s ease;
+}
+
+.drop-slot.active {
+  opacity: 1;
+  height: 8px;
+  background: var(--accent);
+  border-style: solid;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.link-handle {
+  position: absolute;
+  left: 50%;
+  bottom: -0.45rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background: var(--panel);
+  transform: translateX(-50%);
+  cursor: crosshair;
+  z-index: 4;
+  min-height: 0;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.link-handle:hover,
+.link-handle:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+.link-handle.alt {
+  left: auto;
+  right: calc(0.2rem + var(--alt-i, 0) * 1.05rem);
+  bottom: -0.45rem;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-width: 1.5px;
+  border-color: var(--branch);
+  transform: none;
+}
+
+.link-handle.alt.danger {
+  border-color: var(--danger);
+}
+
+.canvas-wrap.is-linking {
+  cursor: crosshair;
+  user-select: none;
+}
+
+.step-card.link-target {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent),
+    inset 0 3px 0 color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.link-preview {
+  pointer-events: none;
+}
+
+.canvas-svg path.edge-dimmed {
+  opacity: 0.2;
+}
+
+.edge-end-handle {
+  position: absolute;
+  width: 1rem;
+  height: 1rem;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background: var(--panel);
+  cursor: grab;
+  z-index: 5;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.edge-end-handle:hover,
+.edge-end-handle:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+.edge-end-handle.primary {
+  border-color: var(--accent);
+}
+
+.edge-end-handle.danger {
+  border-color: var(--danger);
+}
+
+.edge-end-handle.danger:hover {
+  background: var(--danger);
+}
+
+.edge-delete {
+  position: absolute;
+  width: 1.15rem;
+  height: 1.15rem;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--danger);
+  font-size: 0.85rem;
+  line-height: 1;
+  z-index: 5;
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.edge-delete:hover,
+.edge-delete:focus-visible {
+  opacity: 1;
+  border-color: var(--danger);
+  outline: none;
+}
+
+.link-delete-zone {
+  position: sticky;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  margin: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1.5px dashed color-mix(in srgb, var(--danger) 70%, var(--line));
+  background: color-mix(in srgb, var(--panel) 88%, var(--danger));
+  color: var(--danger);
+  font-size: 0.8rem;
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+.link-delete-zone.active {
+  opacity: 1;
+  border-style: solid;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent);
 }
 
 .step-card.is-start {
@@ -300,6 +482,28 @@ button.active {
 
 .step-card.terminal {
   border-style: dashed;
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--muted) 75%, var(--line));
+  background: color-mix(in srgb, var(--card) 88%, var(--muted));
+  box-shadow: inset 0 3px 0 color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.step-card.terminal:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--muted));
+}
+
+.step-card.terminal.selected {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 3px 0 color-mix(in srgb, var(--muted) 55%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  .step-card.terminal {
+    border-color: color-mix(in srgb, var(--muted) 85%, var(--text));
+    background: color-mix(in srgb, var(--card) 82%, var(--muted));
+  }
 }
 
 .step-type {
@@ -323,13 +527,19 @@ button.active {
   font-size: 0.8rem;
   color: var(--muted);
   margin-top: 0.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .step-meta {
   display: block;
   font-size: 0.72rem;
   color: var(--branch);
-  margin-top: 0.3rem;
+  margin-top: 0.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .orphan-banner {
