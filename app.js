@@ -10,11 +10,13 @@ import { computeLayout, resolvePositions } from "./lib/layout.js";
 
 const DEF_PATH = "workflow.yaml";
 const CELL_W = 220;
-const CELL_H = 130;
+/** Row pitch — must exceed tallest step card (title + outs). */
+const CELL_H = 200;
 const CARD_W = 188;
-const CARD_H = 78;
+/** Approximate card body for edge anchors (CSS may grow taller). */
+const CARD_H = 96;
 const ORIGIN_X = 56;
-const ORIGIN_Y = 36;
+const ORIGIN_Y = 40;
 
 const pathLabel = document.getElementById("path-label");
 const modeLabel = document.getElementById("mode-label");
@@ -509,12 +511,6 @@ function renderInspector() {
     `;
   }
 
-  const idOpts = Object.keys(steps)
-    .map(
-      (sid) =>
-        `<option value="${escapeHtml(sid)}">${escapeHtml(sid)}</option>`
-    )
-    .join("");
   const edges = listOutgoingEdgesMarked(step);
   const edgeRows = edges
     .map((e, i) => {
@@ -572,7 +568,6 @@ function renderInspector() {
       runValidate(false);
     });
   }
-  void idOpts;
 }
 
 async function extractRunFile(id) {
