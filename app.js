@@ -387,6 +387,7 @@ function renderInspector() {
       <label class="field"><span>run</span><textarea data-k="run" ${disabled}>${escapeHtml(step.run || "")}</textarea></label>
       <label class="field"><span>next</span><input data-k="next" value="${escapeHtml(step.next || "")}" ${disabled} /></label>
       <label class="field"><span>onError</span><input data-k="onError" value="${escapeHtml(step.onError || "")}" ${disabled} /></label>
+      <button type="button" id="btn-extract-run" class="ghost" ${disabled || !step.run ? "disabled" : ""}>抽成 runFile</button>
     `;
   } else if (type === "await_ui") {
     typeFields = `
@@ -444,6 +445,56 @@ function renderInspector() {
   document.getElementById("btn-del-step")?.addEventListener("click", () => {
     deleteStep(selectedId);
   });
+  document.getElementById("btn-extract-run")?.addEventListener("click", () => {
+    void extractRunFile(selectedId);
+  });
+}
+
+async function extractRunFile(id) {
+  if (!ast || !writable() || !id) return;
+  const steps = ensureSteps();
+  const step = steps[id];
+  if (!step || typeof step.run !== "string" || !step.run.trim()) {
+    setStatus("沒有可抽的 run", "bad");
+    return;
+  }
+  const path = `steps/${id}.js`;
+  const body = `/** Extracted from workflow step \`${id}\` */\nexport default async function run(ctx) {\n${indentBlock(step.run, 2)}\n}\n`;
+  if (session === "tool") {
+    try {
+      await api("/api/tool/file", {
+        method: "PUT",
+        body: JSON.stringify({ path, content: body }),
+      });
+    } catch (e) {
+      setStatus(
+        (e instanceof Error ? e.message : String(e)) +
+          "（需 grant 含 steps/）",
+        "bad"
+      );
+      return;
+    }
+  }
+  step.runFile = `./${path}`;
+  delete step.run;
+  delete step.builtin;
+  markDirty();
+  renderAll();
+  setStatus(
+    session === "tool"
+      ? `已抽成 ${path} 並改引用`
+      : `已改 runFile→./${path}（standalone 未寫檔；掛工具後再抽一次以落盤）`,
+    "ok"
+  );
+}
+
+function indentBlock(src, n) {
+  const pad = " ".repeat(n);
+  return String(src)
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => (line ? pad + line : line))
+    .join("\n");
 }
 
 function readInspectorValue(el) {
