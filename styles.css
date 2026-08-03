@@ -204,6 +204,8 @@ button.active {
 .step-card {
   position: absolute;
   width: 11.75rem;
+  min-height: 5.5rem;
+  max-height: 7.25rem;
   padding: 0.55rem 0.65rem;
   border: 1px solid var(--line);
   border-radius: 0.55rem;
@@ -211,6 +213,7 @@ button.active {
   box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
   cursor: pointer;
   text-align: left;
+  overflow: hidden;
 }
 
 .step-card.is-start {
