@@ -1,0 +1,56 @@
+apiVersion: "1"
+kind: Workflow
+workflowId: content-review
+title: 內容審核
+start: draft
+vars:
+  title: ""
+  body: ""
+
+steps:
+  draft:
+    type: action
+    title: 正規化草稿
+    run: |
+      const title = String(ctx.vars.title || "").trim();
+      const body = String(ctx.vars.body || "").trim();
+      if (!title || !body) {
+        return { ok: false, error: { code: "empty_draft", message: "title/body required" } };
+      }
+      return {
+        ok: true,
+        varsPatch: { title, body },
+      };
+    next: approve
+    onError: failed
+
+  approve:
+    type: await_ui
+    title: 人工核准
+    form:
+      decision:
+        type: enum
+        options: [approve, reject]
+      note:
+        type: string
+        optional: true
+    on:
+      approve: publish
+      reject: draft
+
+  publish:
+    type: action
+    title: 發佈
+    builtin: noop
+    next: done
+    onError: failed
+
+  done:
+    type: terminal
+    outcome: completed
+    summary: 已發佈
+
+  failed:
+    type: terminal
+    outcome: failed
+    summary: 流程失敗

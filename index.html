@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="workflow.v1 垂直視覺編輯器。掛成 Playgrounds 工具可編輯宿主 workflow.yaml。"
+    />
+    <meta name="sam:tool-kinds" content="editor:workflow" />
+    <meta
+      name="sam:tool-globs"
+      content="workflow.yaml, *.yaml, steps/**/*.js"
+    />
+    <title>流程視覺編輯</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <strong>流程視覺編輯</strong>
+          <span id="path-label" class="path" title="授權路徑">—</span>
+          <span id="mode-label" class="mode" title="模式"></span>
+        </div>
+        <div class="actions">
+          <button type="button" id="btn-graph" class="ghost active">圖</button>
+          <button type="button" id="btn-yaml" class="ghost">YAML</button>
+          <button type="button" id="btn-add" class="ghost">＋步驟</button>
+          <button type="button" id="btn-layout" class="ghost" title="整理版面並寫入 ui">
+            整理版面
+          </button>
+          <button type="button" id="btn-validate" class="ghost">校驗</button>
+          <button type="button" id="btn-sample" class="ghost" hidden>
+            載入範例
+          </button>
+          <button type="button" id="btn-reload" class="ghost">重新載入</button>
+          <button type="button" id="btn-save" class="primary" disabled hidden>
+            儲存
+          </button>
+          <button type="button" id="btn-close" class="ghost" hidden>關閉</button>
+        </div>
+      </header>
+      <p id="status" class="status" role="status"></p>
+
+      <div id="graph-pane" class="main graph-pane">
+        <div class="canvas-wrap" id="canvas-wrap">
+          <div class="canvas" id="canvas">
+            <svg class="canvas-svg" id="edges-svg" aria-hidden="true"></svg>
+            <div id="cards"></div>
+          </div>
+        </div>
+        <aside class="inspector" aria-label="步驟檢視器">
+          <h2 id="inspector-title">未選取</h2>
+          <div class="inspector-body" id="inspector-body">
+            <p class="empty">點選步驟卡以編輯</p>
+          </div>
+          <ul class="issues" id="issues" hidden></ul>
+          <p class="hint">
+            垂直主軸投影 workflow.v1。儲存會重寫 YAML（可能丟失註解）。不執行引擎。
+          </p>
+        </aside>
+      </div>
+
+      <div id="yaml-pane" class="yaml-pane" hidden>
+        <textarea
+          id="yaml-editor"
+          spellcheck="false"
+          aria-label="YAML 編輯"
+        ></textarea>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
