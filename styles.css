@@ -181,10 +181,11 @@ button.active {
 }
 
 .canvas-svg {
+  /* Size comes from width/height attributes in JS — never 100%, or
+     paths stretch while absolutely-positioned cards stay put. */
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  top: 0;
+  left: 0;
   pointer-events: none;
   overflow: visible;
   z-index: 1;
