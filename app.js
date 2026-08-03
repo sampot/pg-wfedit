@@ -12,14 +12,14 @@ const DEF_PATH = "workflow.yaml";
 const CARD_W = 188;
 /** Fixed card height in px (must match CSS `.step-card` height). */
 const CARD_H = 92;
-/** Clear air between card bottom and next card top. */
-const GAP_Y = 120;
+/** Air between card bottom and next card top. */
+const GAP_Y = 52;
 const CELL_H = CARD_H + GAP_Y;
-const CELL_W = 260;
-/** Left margin for back-edge lanes (reject / upward edges). */
-const ORIGIN_X = 140;
-const ORIGIN_Y = 40;
-const BACK_LANE = 52;
+const CELL_W = 240;
+const ORIGIN_X = 72;
+const ORIGIN_Y = 32;
+/** Side lane offset for back-edges / non-primary loops (to the right of cards). */
+const SIDE_LANE = 36;
 
 const pathLabel = document.getElementById("path-label");
 const modeLabel = document.getElementById("mode-label");
@@ -255,18 +255,23 @@ function drawPos(grid) {
 }
 
 /**
- * Route an edge. Forward edges go down; back/up edges use staggered left lanes.
- * @param {number} [backSlot]
+ * Route an edge.
+ * - Main-chain (same column, down): straight centered vertical
+ * - Side / same row: horizontal into neighbor
+ * - Back / up (e.g. reject→draft): right-side orthogonal loop
+ *
+ * @param {number} [sideSlot] stagger for multiple side/back edges
  */
-function routeEdge(from, to, fromPos, toPos, backSlot = 0) {
+function routeEdge(from, to, fromPos, toPos, sideSlot = 0) {
   const halfH = CARD_H / 2;
   const halfW = CARD_W / 2;
-  const x1 = from.x;
-  const y1 = from.y + halfH - 1;
-  const x2 = to.x;
-  const y2 = to.y - halfH + 1;
+  // Anchor at card border centers (geometric center of the box)
+  const xBot = from.x;
+  const yBot = from.y + halfH;
+  const xTop = to.x;
+  const yTop = to.y - halfH;
 
-  // Same row → horizontal (e.g. onError parked beside source)
+  // Same row → horizontal
   if (fromPos.y === toPos.y && fromPos.x !== toPos.x) {
     const dir = toPos.x > fromPos.x ? 1 : -1;
     const xExit = from.x + dir * halfW;
@@ -274,32 +279,47 @@ function routeEdge(from, to, fromPos, toPos, backSlot = 0) {
     const midX = (xExit + xEnter) / 2;
     return {
       d: `M ${xExit} ${from.y} L ${xEnter} ${to.y}`,
-      labelAt: { x: midX - 16, y: from.y - 8 },
+      labelAt: { x: midX - 10, y: from.y - 10 },
       insertAt: null,
       forward: true,
+      kind: "horizontal",
     };
   }
 
-  if (toPos.y > fromPos.y) {
-    const mid = (y1 + y2) / 2;
+  // Main chain: same column, downward — straight line through centers
+  if (toPos.y > fromPos.y && fromPos.x === toPos.x) {
+    const midY = (yBot + yTop) / 2;
     return {
-      d: `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`,
-      labelAt: { x: (x1 + x2) / 2 + 14, y: mid + 4 },
-      insertAt: { x: (x1 + x2) / 2, y: mid },
+      d: `M ${xBot} ${yBot} L ${xTop} ${yTop}`,
+      labelAt: { x: xBot + 12, y: midY + 4 },
+      insertAt: { x: xBot, y: midY },
       forward: true,
+      kind: "main",
     };
   }
 
-  // back-edge / upward: staggered left orthogonal lanes
-  const laneX =
-    Math.min(from.x, to.x) - halfW - BACK_LANE - backSlot * 22;
+  // Forward to another column (branch down-right/left)
+  if (toPos.y > fromPos.y) {
+    const midY = (yBot + yTop) / 2;
+    return {
+      d: `M ${xBot} ${yBot} C ${xBot} ${midY}, ${xTop} ${midY}, ${xTop} ${yTop}`,
+      labelAt: { x: (xBot + xTop) / 2 + 8, y: midY - 4 },
+      insertAt: { x: (xBot + xTop) / 2, y: midY },
+      forward: true,
+      kind: "branch",
+    };
+  }
+
+  // Back-edge / upward (reject → earlier step): loop on the RIGHT
+  const laneX = Math.max(from.x, to.x) + halfW + SIDE_LANE + sideSlot * 20;
   const yExit = from.y;
   const yEnter = to.y;
   return {
-    d: `M ${from.x - halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x - halfW} ${yEnter}`,
+    d: `M ${from.x + halfW} ${yExit} L ${laneX} ${yExit} L ${laneX} ${yEnter} L ${to.x + halfW} ${yEnter}`,
     labelAt: { x: laneX + 8, y: (yExit + yEnter) / 2 },
     insertAt: null,
     forward: false,
+    kind: "back",
   };
 }
 
@@ -322,7 +342,8 @@ function renderGraph() {
     maxY = Math.max(maxY, p.y);
   }
   const cols = maxX - minX + 1;
-  const width = ORIGIN_X + cols * CELL_W + 48;
+  // Extra right pad for back-edge side lanes
+  const width = ORIGIN_X + cols * CELL_W + SIDE_LANE + 80;
   const height = ORIGIN_Y + (maxY + 1) * CELL_H + 32;
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
@@ -377,7 +398,7 @@ function renderGraph() {
   }
 
   // edges first (under cards)
-  let backSlot = 0;
+  let sideSlot = 0;
   for (const [id, step] of Object.entries(steps)) {
     const fromGrid = positions.get(id);
     if (!fromGrid) continue;
@@ -388,15 +409,13 @@ function renderGraph() {
       if (!toGrid) continue;
       const toPos = drawPos(toGrid);
       const to = cardCenter(toPos);
-      const needsBack =
-        toPos.y < fromPos.y ||
-        (toPos.y === fromPos.y && toPos.x === fromPos.x);
+      const needsSide = toPos.y < fromPos.y;
       const route = routeEdge(
         from,
         to,
         fromPos,
         toPos,
-        needsBack ? backSlot++ : 0
+        needsSide ? sideSlot++ : 0
       );
 
       const path = document.createElementNS(ns, "path");
@@ -405,22 +424,27 @@ function renderGraph() {
       const stroke =
         edge.kind === "onError"
           ? "var(--danger)"
-          : edge.primary
+          : edge.primary || route.kind === "main"
             ? "var(--accent)"
             : "var(--edge)";
       path.setAttribute("stroke", stroke);
-      path.setAttribute("stroke-width", edge.primary ? "2.2" : "1.5");
+      path.setAttribute(
+        "stroke-width",
+        edge.primary || route.kind === "main" ? "2.25" : "1.5"
+      );
       path.setAttribute(
         "marker-end",
         edge.kind === "onError"
           ? "url(#arrow-danger)"
-          : edge.primary
+          : edge.primary || route.kind === "main"
             ? "url(#arrow-primary)"
             : "url(#arrow-edge)"
       );
-      if (edge.kind === "onError" || !route.forward) {
+      if (edge.kind === "onError" || route.kind === "back") {
         path.setAttribute("stroke-dasharray", "5 4");
       }
+      // Keep stroke centered under markers
+      path.setAttribute("stroke-linecap", "round");
       svgEl.appendChild(path);
 
       if (edge.label && edge.label !== "next") {
@@ -429,16 +453,19 @@ function renderGraph() {
         label.setAttribute("y", String(route.labelAt.y));
         label.setAttribute("fill", "var(--branch)");
         label.setAttribute("font-size", "11");
-        label.setAttribute("font-weight", edge.primary ? "600" : "400");
+        label.setAttribute(
+          "font-weight",
+          edge.primary || route.kind === "main" ? "600" : "400"
+        );
         label.textContent = edge.label;
         svgEl.appendChild(label);
       }
 
-      // insert only on primary forward edges (avoid clutter / onError)
+      // insert only on main-chain primary edges
       if (
         writable() &&
         !yamlBroken &&
-        route.forward &&
+        route.kind === "main" &&
         edge.primary &&
         route.insertAt
       ) {
