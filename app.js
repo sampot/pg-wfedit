@@ -1784,22 +1784,25 @@ issuesEl.addEventListener("click", (ev) => {
   }
 });
 
-void loadGrantAndFile().catch((e) => {
-  const code = e && typeof e === "object" && "code" in e ? String(e.code) : "";
-  const msg = e instanceof Error ? e.message : String(e);
-  const standaloneHint =
-    code === "tool_inactive" ||
-    code === "not_found" ||
-    /env\.TOOL|工具|Not Found|404/i.test(msg);
-  bootStandalone();
-  if (standaloneHint) {
+async function boot() {
+  try {
+    const health = await api("/api/health");
+    if (health.tool) {
+      await loadGrantAndFile();
+      return;
+    }
+    bootStandalone();
     setStatus(
       "standalone：可編範例；掛成工具後可編工作沙盒的 workflow.yaml"
     );
-    return;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    bootStandalone();
+    setStatus(
+      msg + "（已改本機試寫；要用工具請從遊樂場掛載）",
+      "bad"
+    );
   }
-  setStatus(
-    msg + "（已改本機試寫；要用工具請從遊樂場掛載）",
-    "bad"
-  );
-});
+}
+
+void boot();
